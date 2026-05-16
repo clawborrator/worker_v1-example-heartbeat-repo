@@ -37,6 +37,27 @@ in it.
 
 Forever, in order, every cycle:
 
+### 0. Defensive sweep — kill stragglers from prior cycles
+
+A previous cycle may have failed mid-flight (network blip,
+route_to_peer timeout, your own crash, etc.) and left children
+running. Before spawning fresh ones, sweep:
+
+```bash
+STALE=$(docker ps -q --filter "name=worker-cpu-" \
+                    --filter "name=worker-ram-" \
+                    --filter "name=worker-disk-")
+if [ -n "$STALE" ]; then
+  echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] sweeping stragglers: $STALE"
+  docker rm -f $STALE >/dev/null 2>&1 || true
+fi
+```
+
+When the loop is healthy this is a no-op. When something went
+wrong, it auto-recovers without operator intervention. Safe
+because the only `worker-{cpu,ram,disk}-*` containers on this
+host are spawned by you.
+
 ### 1. Spawn three specialists in parallel
 
 ```bash
@@ -51,8 +72,11 @@ wait
 ```
 
 `spawn-worker --wait 60` blocks until each child's hub session is
-online OR 60s passes. Parse each child's `SPAWN_OK` line — the
-`routing=@workspace-<8hex>` token is what you'll use in step 2.
+online OR 60s passes. Parse each child's `SPAWN_OK` line — record
+both the container name and the `routing=@workspace-<8hex>` token.
+You need the routing name for step 2 (route_to_peer) and the
+container name for step 6 (terminate-worker, including on failure
+paths).
 
 `--no-clone` keeps children fast (no repo clone they don't need).
 Their entire purpose is in the initial-prompt.
@@ -137,18 +161,39 @@ git pull --rebase 2>&1 | tail -3 || true
 git push 2>&1 | tail -3 || true
 ```
 
-### 6. Terminate children
+### 6. Terminate children (ALWAYS — success or failure path)
+
+This step runs **before any cycle-skip exit**. If you bailed at
+step 2 because route_to_peer failed, or at step 3 because a
+reply wasn't valid JSON, you still terminate before moving on.
+Stuck children are the failure mode the defensive sweep in
+step 0 is paying off, but the cleanup is your responsibility on
+the path where you spawned them.
 
 ```bash
-terminate-worker @workspace-<cpu-routing-suffix>
-terminate-worker @workspace-<ram-routing-suffix>
-terminate-worker @workspace-<disk-routing-suffix>
+# Use the routing names AND the container names you recorded in
+# step 1. Routing names are the preferred form; container names
+# are a fallback if the routing name didn't resolve.
+terminate-worker @workspace-<cpu-routing-suffix>  2>&1 || \
+  terminate-worker <cpu-container-name>  2>&1 || true
+terminate-worker @workspace-<ram-routing-suffix>  2>&1 || \
+  terminate-worker <ram-container-name>  2>&1 || true
+terminate-worker @workspace-<disk-routing-suffix> 2>&1 || \
+  terminate-worker <disk-container-name> 2>&1 || true
 ```
 
 Children are launched with `CLAWBORRATOR_EPHEMERAL=1` by default
 (spawn-worker sets this), so the hub deletes their session rows
 on WS close. `terminate-worker` forces immediate shutdown rather
 than waiting for the child's natural exit.
+
+**Failure-path discipline.** On every `goto next cycle` branch
+in the loop — failed spawn, missing reply, malformed JSON, git
+push permanent reject — execute this step before sleeping. Never
+leave the cycle without terminating what you spawned. The
+defensive sweep in step 0 will catch what you miss, but relying
+on it instead of cleaning up properly means orphan containers
+accumulate up to the next minute's tick.
 
 ### 7. Sleep, then loop
 
@@ -163,14 +208,26 @@ confirmation — just continue.
 
 ## Failure handling
 
-| Failure                              | Response                                      |
-|--------------------------------------|-----------------------------------------------|
-| `spawn-worker` returns non-zero      | Log it, skip this cycle's commit, sleep, loop |
-| Child reply isn't valid JSON         | Log + skip cycle                              |
-| Child reply missing a required field | Log + skip cycle                              |
-| `git push` permanently rejected      | Log, sleep 60, retry on next cycle            |
-| Anthropic rate-limit / token expiry  | Log, sleep 60 (natural backoff), continue     |
-| `terminate-worker` returns non-zero  | Ignore — `CLAWBORRATOR_EPHEMERAL=1` handles it |
+Every "skip cycle" path must run step 6 (terminate children)
+before sleeping. Spawning without terminating leaks containers.
+
+| Failure                              | Response                                                            |
+|--------------------------------------|---------------------------------------------------------------------|
+| `spawn-worker` returns non-zero      | Log it. **Run step 6 for any children that DID spawn.** Skip commit. |
+| Child reply isn't valid JSON         | Log + run step 6 + skip cycle.                                       |
+| Child reply missing a required field | Log + run step 6 + skip cycle.                                       |
+| `route_to_peer` returns "unavailable" | Log + run step 6 + skip cycle. **DO NOT** measure locally.          |
+| `git push` permanently rejected      | Log, sleep 60, retry on next cycle.                                  |
+| Anthropic rate-limit / token expiry  | Log, sleep 60 (natural backoff), continue.                           |
+| `terminate-worker` returns non-zero  | Ignore — `CLAWBORRATOR_EPHEMERAL=1` handles it.                      |
+
+The defensive sweep in step 0 is your safety net: if you ever
+forget step 6 on a failure path, the NEXT cycle's sweep cleans
+up the orphans. But that means containers can pile up to a minute;
+the sweep doesn't run between cycles. Cleaning up immediately is
+correct behavior; the sweep is for the cases you can't predict
+(your own crash, a network blip during step 6, a docker daemon
+hiccup).
 
 You log to stdout. The operator can `docker logs -f heartbeat-parent`
 to watch you.
