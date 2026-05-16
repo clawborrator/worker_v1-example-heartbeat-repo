@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-05-16T05:27:20Z",
+  "updated_at": "2026-05-16T05:28:21Z",
   "snapshots": [
     {
       "ts": "2026-05-16T02:02:23Z",
@@ -1946,6 +1946,16 @@
       "cpu_percent": 4.15,
       "ram_percent": 19.09,
       "ram_used_mb": 2967,
+      "ram_total_mb": 15544,
+      "disk_percent": 2.9,
+      "disk_used_gb": 29,
+      "disk_total_gb": 1006
+    },
+    {
+      "ts": "2026-05-16T05:28:21Z",
+      "cpu_percent": 3.6,
+      "ram_percent": 19.16,
+      "ram_used_mb": 2978,
       "ram_total_mb": 15544,
       "disk_percent": 2.9,
       "disk_used_gb": 29,
