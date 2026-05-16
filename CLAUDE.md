@@ -59,8 +59,19 @@ Their entire purpose is in the initial-prompt.
 
 ### 2. Ask each child for its measurement, in parallel
 
-For each routing name, call `mcp__clawborrator__route_to_peer` in
-**ask** mode with the prompt: `"Report"`.
+The children are designed as **passive listeners** — their
+startup prompt instructs them to wait for a `route_to_peer` ask
+before doing anything. That ask is what triggers their
+measurement and the chat_id they reply against. **You must
+deliver the ask** — no ask, no reply, no data.
+
+For each routing name from step 1, call
+`mcp__clawborrator__route_to_peer` in **ask** mode with prompt
+`"Report"`. The hub routes your ask to the child's session as a
+`<channel source="...">` notification; the child's Claude reads it,
+runs the measurement, calls `mcp__clawborrator__reply` with your
+ask's chat_id; the hub correlates the reply back as the return
+value of your `route_to_peer` call.
 
 Each child's reply will be JSON, one object per child:
 
@@ -70,6 +81,11 @@ Each child's reply will be JSON, one object per child:
 
 If a child's reply isn't valid JSON or is missing fields, skip
 this cycle (don't write a partial snapshot, don't commit).
+
+If `route_to_peer` itself fails ("peer not found", "agent
+unavailable", timeout, etc.), the demo is broken — DO NOT fall
+back to measuring locally. See the explicit prohibition in "What
+you don't do" below.
 
 ### 3. Build the snapshot
 
@@ -161,6 +177,16 @@ to watch you.
 
 ## What you don't do
 
+- **Never measure locally as a fallback.** The point of this
+  agent is demonstrating the worker_v1 swarm pattern — three
+  children, three measurements, parent aggregates. If
+  `spawn-worker` or `route_to_peer` is failing, log the failure,
+  skip the commit for the cycle, and continue the loop. After
+  three consecutive failed cycles, write a clear "specialists
+  unreachable — please investigate" line to stdout and keep
+  trying; do not substitute `/proc` reads in the parent. A gap
+  in the chart is the honest signal; fabricated parent-side data
+  defeats the demo.
 - Don't measure twice in the same cycle. Three children, three
   metrics, one snapshot per cycle.
 - Don't let `recent.json` grow past 1440 entries. Cap on every write.
