@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Heartbeat · clawborrator worker_v1 example</title>
+  <meta name="description" content="Live system-metrics dashboard powered by a clawborrator agent that spawns three child workers every minute and commits a JSON snapshot to this repo.">
+  <style>
+    :root {
+      --bg:     #0d0d10;
+      --panel:  #18181d;
+      --line:   #2a2830;
+      --fg:     #e8e6e3;
+      --muted:  #8a8893;
+      --accent: #6f9fd8;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code {
+      background: #1c1a20;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, Menlo, monospace;
+      font-size: 0.9em;
+    }
+
+    header {
+      padding: 28px 24px 20px;
+      border-bottom: 1px solid var(--line);
+    }
+    header h1 { margin: 0; font-size: 22px; letter-spacing: -0.01em; }
+    header p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      max-width: 760px;
+    }
+
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .stat {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .stat .label {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .stat .value {
+      font-size: 28px;
+      font-weight: 600;
+      margin-top: 6px;
+      letter-spacing: -0.02em;
+    }
+    .stat .sub {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+
+    .chart-wrap {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+    }
+    .chart-wrap canvas { max-width: 100%; }
+
+    .updated {
+      color: var(--muted);
+      font-size: 12px;
+      text-align: right;
+      padding: 12px 0 0;
+    }
+
+    footer {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 36px 24px 28px;
+      color: var(--muted);
+      font-size: 12px;
+      border-top: 1px solid var(--line);
+      margin-top: 32px;
+    }
+
+    @media (max-width: 600px) {
+      header h1 { font-size: 18px; }
+      .stat .value { font-size: 22px; }
+    }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<header>
+  <h1>Heartbeat · clawborrator <code>worker_v1</code> example</h1>
+  <p>
+    A long-running parent agent spawns three specialist children
+    (CPU, RAM, disk) every minute, collects their JSON replies,
+    and commits a snapshot to this repo. This page is GitHub
+    Pages serving <code>data/recent.json</code>; it polls
+    once a minute and renders the time series.
+  </p>
+</header>
+
+<main>
+  <div class="stats">
+    <div class="stat">
+      <div class="label">CPU</div>
+      <div class="value"><span id="stat-cpu">—</span><span style="font-size:0.5em;color:var(--muted);">%</span></div>
+      <div class="sub" id="stat-cpu-sub">no data</div>
+    </div>
+    <div class="stat">
+      <div class="label">RAM</div>
+      <div class="value"><span id="stat-ram">—</span><span style="font-size:0.5em;color:var(--muted);">%</span></div>
+      <div class="sub" id="stat-ram-sub">— / — MB</div>
+    </div>
+    <div class="stat">
+      <div class="label">Disk</div>
+      <div class="value"><span id="stat-disk">—</span><span style="font-size:0.5em;color:var(--muted);">%</span></div>
+      <div class="sub" id="stat-disk-sub">— / — GB</div>
+    </div>
+    <div class="stat">
+      <div class="label">Snapshots</div>
+      <div class="value" id="stat-count">—</div>
+      <div class="sub">last 24h</div>
+    </div>
+  </div>
+
+  <div class="chart-wrap">
+    <canvas id="chart" height="100"></canvas>
+  </div>
+
+  <div class="updated" id="updated">last updated: never</div>
+</main>
+
+<footer>
+  Source: <a href="https://github.com/clawborrator/worker_v1-example-heartbeat-repo" target="_blank" rel="noopener">worker_v1-example-heartbeat-repo</a> ·
+  Deployment: <a href="https://github.com/clawborrator/worker_v1-example-heartbeat-worker" target="_blank" rel="noopener">worker_v1-example-heartbeat-worker</a> ·
+  Built on <a href="https://github.com/clawborrator/worker_v1" target="_blank" rel="noopener">clawborrator worker_v1</a>
+</footer>
+
+<script>
+  const COLORS = {
+    cpu:  '#6f9fd8',
+    ram:  '#7fb069',
+    disk: '#d6b85a',
+  };
+  let chart;
+
+  function fmtNum(n) {
+    if (n == null || isNaN(n)) return '—';
+    return Number(n).toFixed(1);
+  }
+
+  async function refresh() {
+    let data;
+    try {
+      const r = await fetch('data/recent.json?_=' + Date.now(), { cache: 'no-store' });
+      if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+      data = await r.json();
+    } catch (e) {
+      console.error('refresh failed:', e);
+      return;
+    }
+
+    const snaps = Array.isArray(data.snapshots) ? data.snapshots : [];
+    const last  = snaps[snaps.length - 1] || {};
+
+    document.getElementById('stat-cpu').textContent   = fmtNum(last.cpu_percent);
+    document.getElementById('stat-ram').textContent   = fmtNum(last.ram_percent);
+    document.getElementById('stat-disk').textContent  = fmtNum(last.disk_percent);
+    document.getElementById('stat-count').textContent = snaps.length;
+
+    document.getElementById('stat-cpu-sub').textContent =
+      last.ts ? new Date(last.ts).toLocaleTimeString() : 'no data';
+    document.getElementById('stat-ram-sub').textContent = last.ram_total_mb
+      ? (last.ram_used_mb || 0) + ' / ' + last.ram_total_mb + ' MB'
+      : '— / — MB';
+    document.getElementById('stat-disk-sub').textContent = last.disk_total_gb
+      ? (last.disk_used_gb || 0) + ' / ' + last.disk_total_gb + ' GB'
+      : '— / — GB';
+
+    document.getElementById('updated').textContent =
+      'last updated: ' + (data.updated_at || '—');
+
+    // Render abbreviated time labels — HH:MM, with the day shown
+    // on the first label of a new day so the x-axis is readable
+    // across the 24h window.
+    const labels = snaps.map((s) => {
+      const d = new Date(s.ts);
+      return d.toISOString().slice(11, 16);
+    });
+
+    const datasets = ['cpu', 'ram', 'disk'].map((k) => ({
+      label: k.toUpperCase() + ' %',
+      data: snaps.map((s) => s[k + '_percent']),
+      borderColor: COLORS[k],
+      backgroundColor: COLORS[k] + '20',
+      tension: 0.25,
+      pointRadius: 0,
+      borderWidth: 2,
+    }));
+
+    if (!chart) {
+      chart = new Chart(document.getElementById('chart'), {
+        type: 'line',
+        data: { labels, datasets },
+        options: {
+          responsive: true,
+          maintainAspectRatio: true,
+          animation: false,
+          interaction: { mode: 'index', intersect: false },
+          scales: {
+            y: {
+              min: 0, max: 100,
+              ticks: { color: '#8a8893', stepSize: 25 },
+              grid:  { color: '#2a2830' },
+            },
+            x: {
+              ticks: { color: '#8a8893', maxTicksLimit: 8, autoSkip: true },
+              grid:  { display: false },
+            },
+          },
+          plugins: {
+            legend: {
+              labels: { color: '#e8e6e3', boxWidth: 16, padding: 12 },
+              position: 'top',
+              align: 'end',
+            },
+            tooltip: {
+              backgroundColor: '#0d0d10',
+              borderColor: '#2a2830',
+              borderWidth: 1,
+              titleColor: '#e8e6e3',
+              bodyColor: '#e8e6e3',
+            },
+          },
+        },
+      });
+    } else {
+      chart.data.labels = labels;
+      chart.data.datasets.forEach((ds, i) => { ds.data = datasets[i].data; });
+      chart.update('none');
+    }
+  }
+
+  refresh();
+  setInterval(refresh, 60_000);
+</script>
+
+</body>
+</html>
